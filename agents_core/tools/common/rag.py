@@ -1,16 +1,21 @@
 """RAG Service tools (task 0.21).
 
-Thin wrapper over the internal RAG Service (pgvector + DeepSeek embeddings):
-- ``rag_search`` — semantic search across the knowledge base.
-- ``rag_upload`` — ingest a new document chunk.
+Thin wrapper over the internal RAG Service
+(``https://rag-service-production-a41d.up.railway.app``).
 
-Both talk to the Railway-hosted service over HTTPS with an ``X-API-Key``
-header.
+Two tools:
+- ``rag_search`` → ``POST /search`` (semantic + pg_trgm hybrid, no LLM).
+- ``rag_upload`` → ``POST /upload`` (ingest a chunk).
 
-Default base URL matches the deployed instance today; per-env override via
-``base_url=`` keeps dev/prod separation clean. Real integration smoke
-against ``rag-service-production-a41d.up.railway.app`` is the task-0.21 DoD
-and is deferred to the post-session smoke run.
+The service contracts use ``question`` + ``top_k`` + optional ``filters``
+(NOT ``query`` / ``k`` / ``domain``). See
+``work/rag-service/app/server.py::AskRequest`` and ``AskFilters`` for the
+authoritative schema.
+
+Domain filtering is done server-side via the per-agent X-API-Key (each
+key is bound to ``allowed_domains`` in the ``agent_profiles`` table); the
+client doesn't pass ``agent_name`` in the body. Instead the caller passes
+the key for the right agent.
 """
 
 from __future__ import annotations
@@ -40,52 +45,50 @@ async def _post_json(
 
 def make_rag_tools(
     api_key: str,
-    agent_name: str,
     base_url: str = DEFAULT_RAG_BASE_URL,
     client: httpx.AsyncClient | None = None,
 ) -> list[Tool]:
-    """Return ``[rag_search, rag_upload]`` bound to ``agent_name``.
+    """Return ``[rag_search, rag_upload]`` bound to a per-agent X-API-Key.
 
     Parameters
     ----------
     api_key:
-        X-API-Key value. Per-agent keys are the norm (see
-        ``memory/reference_credentials_and_services.md``).
-    agent_name:
-        Required so the RAG service filters to the agent's domain; without
-        it the service returns cross-agent content and the answers get
-        noisy (``feedback_check_existing_first`` — "RAG fallback требует
-        agent_name").
+        Per-agent X-API-Key (see ``rag-service/app/middleware`` for the
+        auth layer). The same key determines which domains the agent can
+        read — don't reuse the master key across agents.
+    base_url:
+        Overrides the default Railway host for dev/preview.
     client:
-        Pass a pre-built ``AsyncClient`` to share connections across calls.
-        A fresh one is created per tool-call otherwise.
+        Optional pre-built ``AsyncClient`` for connection pooling.
     """
     headers = {"X-API-Key": api_key, "Content-Type": "application/json"}
 
-    async def _search(query: str, k: int = 5, domain: str | None = None):
+    async def _search(
+        question: str,
+        top_k: int = 5,
+        filters: dict[str, Any] | None = None,
+    ):
         async with (client or httpx.AsyncClient()) as c:
-            payload: dict[str, Any] = {
-                "query": query,
-                "k": k,
-                "agent_name": agent_name,
-            }
-            if domain:
-                payload["domain"] = domain
+            payload: dict[str, Any] = {"question": question, "top_k": top_k}
+            if filters:
+                payload["filters"] = filters
             return await _post_json(c, f"{base_url}/search", headers, payload)
 
     async def _upload(
-        text: str,
-        title: str,
+        name: str,
+        content: str,
+        source_type: str,
         domain: str,
-        metadata: dict[str, Any] | None = None,
+        idempotency_key: str,
     ):
+        # /upload is {name, content, source_type, domain}; idempotency_key is
+        # prepended to content so re-posts are detectable at the chunk level.
         async with (client or httpx.AsyncClient()) as c:
             payload = {
-                "text": text,
-                "title": title,
+                "name": name,
+                "content": f"[idem:{idempotency_key}]\n{content}",
+                "source_type": source_type,
                 "domain": domain,
-                "agent_name": agent_name,
-                "metadata": metadata or {},
             }
             return await _post_json(
                 c, f"{base_url}/upload", headers, payload, timeout=60.0
@@ -95,21 +98,28 @@ def make_rag_tools(
         Tool(
             name="rag_search",
             description=(
-                "Semantic search over the RAG knowledge base. Returns top-k "
-                "chunks with text + metadata. Use when the answer requires "
-                "grounded context from project knowledge."
+                "Hybrid search over the RAG knowledge base (pgvector + pg_trgm). "
+                "Returns top-k chunks with text + metadata. No LLM call, cheap."
             ),
             input_schema={
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string"},
-                    "k": {"type": "integer", "default": 5, "minimum": 1, "maximum": 20},
-                    "domain": {
-                        "type": "string",
-                        "description": "Optional domain filter, e.g. 'okk', 'crm'.",
+                    "question": {"type": "string"},
+                    "top_k": {
+                        "type": "integer",
+                        "default": 5,
+                        "minimum": 1,
+                        "maximum": 50,
+                    },
+                    "filters": {
+                        "type": "object",
+                        "description": (
+                            "Optional AskFilters: source_type, "
+                            "exclude_source_types[], operator, date_from."
+                        ),
                     },
                 },
-                "required": ["query"],
+                "required": ["question"],
             },
             handler=_search,
             tier="read",
@@ -119,23 +129,27 @@ def make_rag_tools(
         Tool(
             name="rag_upload",
             description=(
-                "Upload a document chunk to the RAG index. Use for "
-                "persisting new institutional knowledge."
+                "Upload a document chunk to the RAG index. Use when new "
+                "institutional knowledge needs to be persisted for agents."
             ),
             input_schema={
                 "type": "object",
                 "properties": {
-                    "text": {"type": "string"},
-                    "title": {"type": "string"},
+                    "name": {"type": "string"},
+                    "content": {"type": "string"},
+                    "source_type": {"type": "string"},
                     "domain": {"type": "string"},
-                    "metadata": {"type": "object"},
                     "idempotency_key": {"type": "string"},
                 },
-                "required": ["text", "title", "domain", "idempotency_key"],
+                "required": [
+                    "name",
+                    "content",
+                    "source_type",
+                    "domain",
+                    "idempotency_key",
+                ],
             },
-            handler=lambda text, title, domain, idempotency_key, metadata=None: _upload(
-                text, title, domain, metadata
-            ),
+            handler=_upload,
             tier="write",
             idempotent=False,
             requires_verify=False,  # upload endpoint has its own dedup

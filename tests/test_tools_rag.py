@@ -1,4 +1,11 @@
-"""Unit tests for agents_core.tools.common.rag (task 0.21)."""
+"""Unit tests for agents_core.tools.common.rag (task 0.21).
+
+Real contract (see work/rag-service/app/server.py::AskRequest):
+  POST /search  {question: str, top_k: int, filters?: {...}}
+  POST /upload  {name, content, source_type, domain}
+
+Domain filtering is done server-side via the per-agent X-API-Key, not the body.
+"""
 
 from __future__ import annotations
 
@@ -10,59 +17,80 @@ from agents_core.tools.common.rag import DEFAULT_RAG_BASE_URL, make_rag_tools
 
 class TestFactoryShape:
     def test_returns_two_tools(self):
-        tools = make_rag_tools(api_key="k", agent_name="ceo")
-        names = [t.name for t in tools]
-        assert names == ["rag_search", "rag_upload"]
+        tools = make_rag_tools(api_key="k")
+        assert [t.name for t in tools] == ["rag_search", "rag_upload"]
 
     def test_search_is_read_upload_is_write(self):
-        tools = make_rag_tools(api_key="k", agent_name="ceo")
+        tools = make_rag_tools(api_key="k")
         assert tools[0].tier == "read"
         assert tools[1].tier == "write"
 
     def test_upload_requires_idempotency_key_in_schema(self):
-        upload = [t for t in make_rag_tools("k", "ceo") if t.name == "rag_upload"][0]
+        upload = [t for t in make_rag_tools("k") if t.name == "rag_upload"][0]
         assert "idempotency_key" in upload.input_schema["required"]
+
+    def test_search_schema_uses_question_top_k(self):
+        search = [t for t in make_rag_tools("k") if t.name == "rag_search"][0]
+        assert "question" in search.input_schema["required"]
+        assert "question" in search.input_schema["properties"]
+        assert "top_k" in search.input_schema["properties"]
 
 
 @pytest.mark.asyncio
 class TestSearch:
-    async def test_posts_search_payload_with_agent_name(self):
+    async def test_posts_question_and_top_k(self):
         captured: dict = {}
 
         async def handler(request: httpx.Request) -> httpx.Response:
             captured["url"] = str(request.url)
             captured["headers"] = dict(request.headers)
             captured["body"] = request.content.decode()
-            return httpx.Response(200, json={"results": [{"text": "hit"}]})
+            return httpx.Response(200, json={"answer": "", "sources": [], "cost_usd": 0})
 
         transport = httpx.MockTransport(handler)
         client = httpx.AsyncClient(transport=transport)
         search = next(
-            t
-            for t in make_rag_tools("secret", "ceo", client=client)
-            if t.name == "rag_search"
+            t for t in make_rag_tools("secret", client=client) if t.name == "rag_search"
         )
-        result = await search.handler(query="как работают звонки", k=3)
-        assert result == {"results": [{"text": "hit"}]}
+        await search.handler(question="как работают звонки", top_k=3)
         assert f"{DEFAULT_RAG_BASE_URL}/search" == captured["url"]
         assert captured["headers"]["x-api-key"] == "secret"
-        assert '"agent_name":"ceo"' in captured["body"]
-        assert '"k":3' in captured["body"]
+        assert '"question":"как работают звонки"' in captured["body"]
+        assert '"top_k":3' in captured["body"]
+        # agent_name is NOT in the body (server uses API key for domain filter)
+        assert "agent_name" not in captured["body"]
+
+    async def test_filters_are_passed_through(self):
+        captured: dict = {}
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            captured["body"] = request.content.decode()
+            return httpx.Response(200, json={})
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        search = next(
+            t for t in make_rag_tools("k", client=client) if t.name == "rag_search"
+        )
+        await search.handler(
+            question="q", filters={"source_type": "call", "operator": "ivanov"}
+        )
+        assert '"filters"' in captured["body"]
+        assert '"operator":"ivanov"' in captured["body"]
 
     async def test_custom_base_url_respected(self):
         async def handler(request: httpx.Request) -> httpx.Response:
             assert "staging.rag.example" in str(request.url)
-            return httpx.Response(200, json={"results": []})
+            return httpx.Response(200, json={})
 
         client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
         search = next(
             t
             for t in make_rag_tools(
-                "k", "ceo", base_url="https://staging.rag.example", client=client
+                "k", base_url="https://staging.rag.example", client=client
             )
             if t.name == "rag_search"
         )
-        await search.handler(query="test")
+        await search.handler(question="test")
 
     async def test_raises_on_http_error(self):
         async def handler(request: httpx.Request) -> httpx.Response:
@@ -70,34 +98,36 @@ class TestSearch:
 
         client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
         search = next(
-            t for t in make_rag_tools("bad", "x", client=client) if t.name == "rag_search"
+            t for t in make_rag_tools("bad", client=client) if t.name == "rag_search"
         )
         with pytest.raises(httpx.HTTPStatusError):
-            await search.handler(query="test")
+            await search.handler(question="test")
 
 
 @pytest.mark.asyncio
 class TestUpload:
-    async def test_upload_posts_payload(self):
+    async def test_upload_sends_server_fields(self):
         captured: dict = {}
 
         async def handler(request: httpx.Request) -> httpx.Response:
             captured["url"] = str(request.url)
             captured["body"] = request.content.decode()
-            return httpx.Response(200, json={"id": "doc-1", "chunks": 3})
+            return httpx.Response(200, json={"chunks": 3})
 
         client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
         upload = next(
-            t for t in make_rag_tools("k", "hr", client=client) if t.name == "rag_upload"
+            t for t in make_rag_tools("k", client=client) if t.name == "rag_upload"
         )
         result = await upload.handler(
-            text="Важное правило...",
-            title="Лучшие практики",
+            name="Лучшие практики",
+            content="Важное правило...",
+            source_type="knowledge",
             domain="hr",
             idempotency_key="k-1",
-            metadata={"source": "manual"},
         )
-        assert result == {"id": "doc-1", "chunks": 3}
+        assert result == {"chunks": 3}
         assert "/upload" in captured["url"]
+        assert '"name":"Лучшие практики"' in captured["body"]
+        assert '"source_type":"knowledge"' in captured["body"]
         assert '"domain":"hr"' in captured["body"]
-        assert '"source":"manual"' in captured["body"]
+        assert "[idem:k-1]" in captured["body"]
