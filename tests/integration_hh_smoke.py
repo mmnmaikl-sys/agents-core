@@ -30,7 +30,9 @@ async def main() -> int:
     print(f"[hh-smoke] resumes returned: {len(items)}")
     if items:
         first = items[0]
-        print(f"[hh-smoke] first title={first.get('title','?')!r} area={first.get('area',{}).get('name','?')}")
+        title = first.get("title", "?")
+        area = first.get("area", {}).get("name", "?")
+        print(f"[hh-smoke] first title={title!r} area={area}")
     assert isinstance(items, list), f"expected list, got {type(items)}"
     print("[hh-smoke] OK — HH API auth + resumes search works")
     return 0
