@@ -394,13 +394,25 @@ class LLMClient:
                     block.get("type") if isinstance(block, dict) else None
                 )
                 if btype == "tool_use":
+                    # SDK returns ToolUseBlock (pydantic); tests pass dicts.
+                    # Empty input dict {} is falsy, so use hasattr/isinstance
+                    # rather than `or`-fallback.
+                    def _pick(obj: Any, key: str, default: Any) -> Any:
+                        if hasattr(obj, key) and not isinstance(obj, dict):
+                            return getattr(obj, key)
+                        if isinstance(obj, dict):
+                            return obj.get(key, default)
+                        return default
+
                     tool_uses.append(ToolUse(
-                        id=getattr(block, "id", None) or block["id"],
-                        name=getattr(block, "name", None) or block["name"],
-                        input=getattr(block, "input", None) or block["input"],
+                        id=_pick(block, "id", ""),
+                        name=_pick(block, "name", ""),
+                        input=_pick(block, "input", {}),
                     ))
                 elif btype == "text":
-                    text_parts.append(getattr(block, "text", None) or block.get("text", ""))
+                    text_parts.append(getattr(block, "text", None) or (
+                        block.get("text", "") if isinstance(block, dict) else ""
+                    ))
 
             usage = LLMUsage(
                 input=msg.usage.input_tokens,
