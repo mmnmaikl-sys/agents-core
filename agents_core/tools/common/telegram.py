@@ -45,7 +45,12 @@ class TelegramClient:
         files: dict[str, Any] | None = None,
     ) -> Any:
         url = f"{self._base}/{method}"
-        async with (self._client or httpx.AsyncClient()) as c:
+        # Reuse external client without closing it (callers fan out many calls).
+        c = self._client
+        owns_client = c is None
+        if owns_client:
+            c = httpx.AsyncClient()
+        try:
             if files:
                 resp = await c.post(
                     url, data=payload or {}, files=files, timeout=self._timeout
@@ -54,6 +59,9 @@ class TelegramClient:
                 resp = await c.post(url, json=payload or {}, timeout=self._timeout)
             resp.raise_for_status()
             data = resp.json()
+        finally:
+            if owns_client:
+                await c.aclose()
         if not data.get("ok"):
             raise TelegramError(
                 data.get("error_code"), data.get("description", "unknown")

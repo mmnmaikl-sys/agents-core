@@ -74,12 +74,19 @@ class DirectClient:
     ) -> dict[str, Any]:
         url = f"{DIRECT_API_URL}/{resource}"
         body = {"method": method, "params": params}
-        async with (self._client or httpx.AsyncClient()) as c:
+        c = self._client
+        owns_client = c is None
+        if owns_client:
+            c = httpx.AsyncClient()
+        try:
             resp = await c.post(
                 url, json=body, headers=self._headers, timeout=self._timeout
             )
             resp.raise_for_status()
             data = resp.json()
+        finally:
+            if owns_client:
+                await c.aclose()
         if "error" in data:
             err = data["error"]
             raise DirectError(err.get("error_code"), err.get("error_string", "unknown"))

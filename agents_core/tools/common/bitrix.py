@@ -54,10 +54,19 @@ class BitrixClient:
 
     async def call(self, method: str, payload: dict[str, Any] | None = None) -> Any:
         url = f"{self._base}{method}.json"
-        async with (self._client or httpx.AsyncClient()) as c:
-            resp = await c.post(url, json=payload or {}, timeout=self._timeout)
-            resp.raise_for_status()
-            data = resp.json()
+        # Don't close an externally-provided client — callers expect to reuse
+        # the same session across many tool calls (e.g. customer_timeline
+        # which fans out to crm.deal.list + crm.timeline.comment.list +
+        # crm.activity.list in one handler).
+        if self._client is not None:
+            resp = await self._client.post(
+                url, json=payload or {}, timeout=self._timeout
+            )
+        else:
+            async with httpx.AsyncClient() as c:
+                resp = await c.post(url, json=payload or {}, timeout=self._timeout)
+        resp.raise_for_status()
+        data = resp.json()
         if isinstance(data, dict) and "error" in data:
             raise BitrixError(data.get("error"), data.get("error_description"))
         return data.get("result") if isinstance(data, dict) else data

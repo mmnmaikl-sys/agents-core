@@ -53,7 +53,11 @@ class HHClient:
         json: dict[str, Any] | None = None,
     ) -> Any:
         url = f"{_BASE_URL}{path}"
-        async with (self._client or httpx.AsyncClient()) as c:
+        c = self._client
+        owns_client = c is None
+        if owns_client:
+            c = httpx.AsyncClient()
+        try:
             resp = await c.request(
                 method,
                 url,
@@ -66,6 +70,9 @@ class HHClient:
             if resp.status_code == 204 or not resp.content:
                 return {}
             return resp.json()
+        finally:
+            if owns_client:
+                await c.aclose()
 
 
 def make_hh_tools(hh: HHClient) -> list[Tool]:

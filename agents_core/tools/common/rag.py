@@ -63,16 +63,24 @@ def make_rag_tools(
     """
     headers = {"X-API-Key": api_key, "Content-Type": "application/json"}
 
+    async def _with_client(fn):
+        """Run fn(client) reusing external client or opening a fresh one."""
+        if client is not None:
+            return await fn(client)
+        async with httpx.AsyncClient() as c:
+            return await fn(c)
+
     async def _search(
         question: str,
         top_k: int = 5,
         filters: dict[str, Any] | None = None,
     ):
-        async with (client or httpx.AsyncClient()) as c:
-            payload: dict[str, Any] = {"question": question, "top_k": top_k}
-            if filters:
-                payload["filters"] = filters
-            return await _post_json(c, f"{base_url}/search", headers, payload)
+        payload: dict[str, Any] = {"question": question, "top_k": top_k}
+        if filters:
+            payload["filters"] = filters
+        return await _with_client(
+            lambda c: _post_json(c, f"{base_url}/search", headers, payload)
+        )
 
     async def _upload(
         name: str,
@@ -81,18 +89,15 @@ def make_rag_tools(
         domain: str,
         idempotency_key: str,
     ):
-        # /upload is {name, content, source_type, domain}; idempotency_key is
-        # prepended to content so re-posts are detectable at the chunk level.
-        async with (client or httpx.AsyncClient()) as c:
-            payload = {
-                "name": name,
-                "content": f"[idem:{idempotency_key}]\n{content}",
-                "source_type": source_type,
-                "domain": domain,
-            }
-            return await _post_json(
-                c, f"{base_url}/upload", headers, payload, timeout=60.0
-            )
+        payload = {
+            "name": name,
+            "content": f"[idem:{idempotency_key}]\n{content}",
+            "source_type": source_type,
+            "domain": domain,
+        }
+        return await _with_client(
+            lambda c: _post_json(c, f"{base_url}/upload", headers, payload, timeout=60.0)
+        )
 
     return [
         Tool(
