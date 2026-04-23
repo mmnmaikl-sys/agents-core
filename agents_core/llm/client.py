@@ -78,6 +78,37 @@ class LLMResponse:
     raw: Any = None  # underlying SDK response for callers that need it
 
 
+@dataclass
+class ToolUse:
+    """A single tool_use block from an Anthropic agent turn."""
+
+    id: str
+    name: str
+    input: dict[str, Any]
+
+
+@dataclass
+class AgentTurn:
+    """One ReAct turn: model + tools -> content blocks + stop_reason.
+
+    `tool_uses` is the list of tool_use blocks the model emitted. `text` is
+    the concatenated text from text blocks (if any). `message_content` is the
+    raw Anthropic content list that MUST be echoed back as assistant message
+    for the next turn (per Messages API contract).
+    """
+
+    model: str
+    stop_reason: str  # "end_turn" | "tool_use" | "max_tokens" | "stop_sequence"
+    text: str
+    tool_uses: list[ToolUse]
+    message_content: list[Any]  # raw content blocks (SDK objects or dicts)
+    usage: LLMUsage = field(default_factory=LLMUsage)
+    cost_usd: float = 0.0
+    duration_sec: float = 0.0
+    attempt: int = 1
+    raw: Any = None
+
+
 class LLMClient:
     """Async LLM client with unified interface across Anthropic and DeepSeek."""
 
@@ -288,6 +319,129 @@ class LLMClient:
             return LLMResponse(
                 text=text, model="deepseek-chat", usage=usage, cost_usd=cost,
                 duration_sec=duration, attempt=attempt, raw=data,
+            )
+
+        lf.end_generation_err(gen, last_error or RuntimeError("unknown"))
+        raise last_error or RuntimeError("retries exhausted")
+
+    # ------------------------------------------------------------ agent turn
+    async def chat_with_tools(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        model: str = "sonnet",
+        system: str | None = None,
+        system_cache: bool = False,
+        max_tokens: int = 4096,
+        name: str = "llm.chat_with_tools",
+    ) -> AgentTurn:
+        """Run one ReAct turn: send messages + tools, return content + stop_reason.
+
+        Anthropic-only. `messages` must follow the Messages API contract (a list
+        of alternating user/assistant turns). `tools` is a list from
+        `ToolRegistry.for_api()` or equivalent. The returned AgentTurn contains
+        stop_reason, any tool_use blocks, text, and the raw content list that
+        the caller must echo back as the next assistant message.
+        """
+        if self._anthropic is None:
+            raise RuntimeError("anthropic_api_key not set — chat_with_tools requires Anthropic")
+
+        model_id = MODEL_MAP.get(model, model)
+
+        kwargs: dict[str, Any] = {
+            "model": model_id,
+            "max_tokens": max_tokens,
+            "temperature": self._temperature,
+            "messages": messages,
+            "tools": tools,
+        }
+        if system is not None:
+            kwargs["system"] = _system_with_cache(system, system_cache)
+
+        last_user = next(
+            (m for m in reversed(messages) if m.get("role") == "user"),
+            {"content": ""},
+        )
+        lf_user_msg = (
+            last_user["content"] if isinstance(last_user.get("content"), str)
+            else str(last_user.get("content", ""))[:1024]
+        )
+        gen = lf.start_generation(
+            name=name, model=model_id, user_message=lf_user_msg,
+            system=system, max_tokens=max_tokens,
+            extra_params={"tools_count": len(tools)},
+        )
+
+        last_error: BaseException | None = None
+        for attempt in range(1, self._max_retries + 1):
+            t0 = time.monotonic()
+            try:
+                msg = await self._anthropic.messages.create(**kwargs)
+            except Exception as exc:
+                last_error = exc
+                if attempt < self._max_retries:
+                    await asyncio.sleep(self._backoff_base ** (attempt - 1))
+                    continue
+                lf.end_generation_err(gen, exc, {"retries_exhausted": self._max_retries})
+                raise
+
+            duration = time.monotonic() - t0
+
+            tool_uses: list[ToolUse] = []
+            text_parts: list[str] = []
+            for block in msg.content:
+                btype = getattr(block, "type", None) or (
+                    block.get("type") if isinstance(block, dict) else None
+                )
+                if btype == "tool_use":
+                    tool_uses.append(ToolUse(
+                        id=getattr(block, "id", None) or block["id"],
+                        name=getattr(block, "name", None) or block["name"],
+                        input=getattr(block, "input", None) or block["input"],
+                    ))
+                elif btype == "text":
+                    text_parts.append(getattr(block, "text", None) or block.get("text", ""))
+
+            usage = LLMUsage(
+                input=msg.usage.input_tokens,
+                output=msg.usage.output_tokens,
+                cache_creation=getattr(msg.usage, "cache_creation_input_tokens", 0) or 0,
+                cache_read=getattr(msg.usage, "cache_read_input_tokens", 0) or 0,
+            )
+            cost = lf.calc_cost(model_id, usage.input, usage.output)
+
+            lf.end_generation_ok(
+                gen,
+                output_text="".join(text_parts) or f"<{len(tool_uses)} tool_use(s)>",
+                model_id=model_id,
+                input_tokens=usage.input,
+                output_tokens=usage.output,
+                duration_sec=duration,
+                attempt=attempt,
+                cache_creation_input_tokens=usage.cache_creation,
+                cache_read_input_tokens=usage.cache_read,
+                extra_metadata={
+                    "stop_reason": msg.stop_reason,
+                    "tool_uses": len(tool_uses),
+                },
+            )
+            logger.info(
+                "[llm.tools] OK model=%s stop=%s tools=%d in=%d out=%d "
+                "cost=$%.6f dur=%.2fs attempt=%d",
+                model_id, msg.stop_reason, len(tool_uses),
+                usage.input, usage.output, cost, duration, attempt,
+            )
+            return AgentTurn(
+                model=model_id,
+                stop_reason=msg.stop_reason,
+                text="".join(text_parts),
+                tool_uses=tool_uses,
+                message_content=list(msg.content),
+                usage=usage,
+                cost_usd=cost,
+                duration_sec=duration,
+                attempt=attempt,
+                raw=msg,
             )
 
         lf.end_generation_err(gen, last_error or RuntimeError("unknown"))

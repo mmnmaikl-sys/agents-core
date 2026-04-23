@@ -147,8 +147,11 @@ class ToolRegistry:
         return [t.to_api_dict() for t in self.filter(tiers=tiers, tags=tags, names=names)]
 
     # --- dispatch ---------------------------------------------------
-    async def call(self, name: str, **kwargs: Any) -> Any:
+    async def call(self, name: str, /, **kwargs: Any) -> Any:
         """Invoke the handler by name. Awaits coroutines, returns sync results as-is.
+
+        `name` is positional-only so tools whose signature has a `name=` kwarg
+        (e.g. `greet(name)`) don't collide with this method's own parameter.
 
         Tier-specific guardrails (HITL for danger, verify-pair for write) land
         in loop/react.py — this method is the bare-metal dispatch used by tests
