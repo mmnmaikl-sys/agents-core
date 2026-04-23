@@ -1,1 +1,20 @@
-"""agents_core.llm — see top-level package docstring."""
+"""agents_core.llm — unified LLM client (Anthropic + DeepSeek).
+
+Re-exports:
+    LLMClient, LLMResponse, LLMUsage, MODEL_MAP
+"""
+from agents_core.llm.caching import split_input_block, wrap_system_with_cache_control
+from agents_core.llm.client import MODEL_MAP, LLMClient, LLMResponse, LLMUsage
+from agents_core.llm.routing import ComplexityRouter, RoutingDecision, Tier
+
+__all__ = [
+    "LLMClient",
+    "LLMResponse",
+    "LLMUsage",
+    "MODEL_MAP",
+    "ComplexityRouter",
+    "RoutingDecision",
+    "Tier",
+    "split_input_block",
+    "wrap_system_with_cache_control",
+]
