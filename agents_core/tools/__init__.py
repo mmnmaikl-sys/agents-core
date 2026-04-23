@@ -10,6 +10,12 @@ from agents_core.tools.registry import (
     ToolNotFoundError,
     ToolRegistry,
 )
+from agents_core.tools.verification import (
+    VerificationError,
+    VerificationResult,
+    default_verify_name,
+    run_with_verify,
+)
 
 __all__ = [
     "Tool",
@@ -17,4 +23,8 @@ __all__ = [
     "Tier",
     "ToolAlreadyRegisteredError",
     "ToolNotFoundError",
+    "VerificationError",
+    "VerificationResult",
+    "default_verify_name",
+    "run_with_verify",
 ]

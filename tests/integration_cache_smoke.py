@@ -36,7 +36,10 @@ async def main() -> int:
         print("[cache-smoke] ANTHROPIC_API_KEY missing", file=sys.stderr)
         return 2
 
-    print(f"[cache-smoke] system prompt len={len(SYSTEM_PROMPT)} chars (~{len(SYSTEM_PROMPT)//4} tokens)")
+    print(
+        f"[cache-smoke] system prompt len={len(SYSTEM_PROMPT)} chars "
+        f"(~{len(SYSTEM_PROMPT)//4} tokens)"
+    )
 
     async with LLMClient(anthropic_api_key=ak) as client:
         r1 = await client.chat(
