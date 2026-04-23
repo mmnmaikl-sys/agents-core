@@ -1,8 +1,11 @@
-"""agents_core.observability — Langfuse wrapper + audit log.
+"""Langfuse wrapper + PG audit log for agent observability."""
 
-Re-exports:
-    langfuse_wrap module (get_langfuse, start_generation, end_generation_ok/err, calc_cost)
-"""
 from agents_core.observability import langfuse_wrap
+from agents_core.observability.audit import AUDIT_LOG_DDL, AuditEvent, AuditLog
 
-__all__ = ["langfuse_wrap"]
+__all__ = [
+    "langfuse_wrap",
+    "AuditEvent",
+    "AuditLog",
+    "AUDIT_LOG_DDL",
+]
