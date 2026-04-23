@@ -192,6 +192,17 @@ async def _user_get(bx: BitrixClient, user_id: int):
     return await bx.call("user.get", {"ID": int(user_id)})
 
 
+async def _user_search(bx: BitrixClient, query: str, active_only: bool = True):
+    """Search Bitrix users by name / last name / email substring.
+
+    Uses NAME_SEARCH which Bitrix matches against the full name and email.
+    """
+    payload: dict[str, Any] = {"FILTER": {"NAME_SEARCH": query}}
+    if active_only:
+        payload["FILTER"]["ACTIVE"] = True
+    return await bx.call("user.get", payload)
+
+
 # --- factory ------------------------------------------------------------
 
 def make_bitrix_tools(bx: BitrixClient) -> list[Tool]:
@@ -392,6 +403,30 @@ def make_bitrix_tools(bx: BitrixClient) -> list[Tool]:
                 "required": ["user_id"],
             },
             handler=lambda user_id, _bx=bx: _user_get(_bx, user_id),
+            tier="read",
+            tags=("bitrix", "user", "read"),
+        ),
+        Tool(
+            name="bitrix_user_search",
+            description=(
+                "Search Bitrix users by name / email substring. Use to "
+                "resolve a responsible_id from a person's name mentioned "
+                "in the briefing (e.g. 'переназначь на Иванова')."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Name / last name / email substring.",
+                    },
+                    "active_only": {"type": "boolean", "default": True},
+                },
+                "required": ["query"],
+            },
+            handler=lambda query, active_only=True, _bx=bx: _user_search(
+                _bx, query, active_only
+            ),
             tier="read",
             tags=("bitrix", "user", "read"),
         ),

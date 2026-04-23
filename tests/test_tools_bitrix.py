@@ -51,16 +51,20 @@ class TestBitrixClient:
 
 @pytest.mark.asyncio
 class TestFactoryShape:
-    async def test_ten_tools_with_pair(self):
+    async def test_eleven_tools_including_user_search(self):
         bx = BitrixClient(BASE)
         tools = make_bitrix_tools(bx)
-        # 8 base + 1 verify pair + deal_close_won
+        # 8 base + 1 verify pair + deal_close_won + user_search (wave 2)
         names = [t.name for t in tools]
-        assert "bitrix_deal_get" in names
-        assert "bitrix_deal_update" in names
-        assert "bitrix_deal_update_verify" in names
-        assert "bitrix_deal_close_won" in names
-        assert len(tools) == 10
+        for required in (
+            "bitrix_deal_get",
+            "bitrix_deal_update",
+            "bitrix_deal_update_verify",
+            "bitrix_deal_close_won",
+            "bitrix_user_search",
+        ):
+            assert required in names, required
+        assert len(tools) == 11
 
     async def test_close_won_is_danger_tier(self):
         bx = BitrixClient(BASE)
