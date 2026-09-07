@@ -241,7 +241,7 @@ async def test_chat_structured_happy(client: LLMClient, monkeypatch):
     assert obj.answer == "42"
     assert resp.usage.input == 200
     assert resp.usage.cache_read == 200
-    assert resp.model == "claude-sonnet-4-20250514"
+    assert resp.model == "claude-sonnet-4-6"
 
     call_kwargs = instructor_mock.messages.create_with_completion.call_args.kwargs
     assert call_kwargs["response_model"] is MyModel
