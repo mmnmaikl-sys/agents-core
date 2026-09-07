@@ -24,6 +24,7 @@ must be Anthropic; no instructor pkg → chat_structured raises clear error.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import time
 from dataclasses import dataclass, field
@@ -130,6 +131,12 @@ class LLMClient:
         self._anthropic: AsyncAnthropic | None = (
             AsyncAnthropic(api_key=anthropic_api_key) if anthropic_api_key else None
         )
+        # anthropic>=1.x dropped `temperature` from AsyncMessages.create() —
+        # detect once at runtime instead of pinning to a single SDK shape.
+        self._anthropic_supports_temperature = bool(
+            self._anthropic is not None
+            and "temperature" in inspect.signature(self._anthropic.messages.create).parameters
+        )
         self._instructor_client: Any | None = None  # lazy
         self._http = http_client or httpx.AsyncClient(timeout=60.0)
         self._owns_http = http_client is None
@@ -175,9 +182,10 @@ class LLMClient:
         kwargs: dict[str, Any] = {
             "model": model_id,
             "max_tokens": max_tokens,
-            "temperature": self._temperature,
             "messages": [{"role": "user", "content": prompt}],
         }
+        if self._anthropic_supports_temperature:
+            kwargs["temperature"] = self._temperature
         if system is not None:
             kwargs["system"] = _system_with_cache(system, system_cache)
 
@@ -351,10 +359,11 @@ class LLMClient:
         kwargs: dict[str, Any] = {
             "model": model_id,
             "max_tokens": max_tokens,
-            "temperature": self._temperature,
             "messages": messages,
             "tools": tools,
         }
+        if self._anthropic_supports_temperature:
+            kwargs["temperature"] = self._temperature
         if system is not None:
             kwargs["system"] = _system_with_cache(system, system_cache)
 
@@ -489,10 +498,11 @@ class LLMClient:
         kwargs: dict[str, Any] = {
             "model": model_id,
             "max_tokens": max_tokens,
-            "temperature": self._temperature,
             "messages": [{"role": "user", "content": prompt}],
             "response_model": response_model,
         }
+        if self._anthropic_supports_temperature:
+            kwargs["temperature"] = self._temperature
         if system is not None:
             kwargs["system"] = _system_with_cache(system, system_cache)
 
